@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Noise Cancellation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .control-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        select, button, input[type="range"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            padding: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #e9ecef;
+        }
+        .visualization {
+            margin-top: 20px;
+            height: 100px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AI Noise Cancellation</h1>
+        
+        <div class="control-group">
+            <label for="inputDevice">Input Device:</label>
+            <select id="inputDevice"></select>
+        </div>
+        
+        <div class="control-group">
+            <label for="noiseSuppression">Noise Suppression Level:</label>
+            <input type="range" id="noiseSuppression" min="0" max="100" value="50">
+        </div>
+        
+        <div class="control-group">
+            <label for="voiceSuppression">Voice Suppression Level:</label>
+            <input type="range" id="voiceSuppression" min="0" max="100" value="50">
+        </div>
+        
+        <button id="startButton">Start Processing</button>
+        <button id="stopButton" disabled>Stop Processing</button>
+        
+        <div class="status" id="status">Ready</div>
+        <div class="visualization" id="visualization"></div>
+    </div>
+
+    <script>
+        // Load WebAssembly module
+        let Module = {
+            preRun: [],
+            postRun: [],
+            print: function(text) {
+                console.log(text);
+            },
+            printErr: function(text) {
+                console.error(text);
+            },
+            canvas: null,
+            setStatus: function(text) {
+                document.getElementById('status').textContent = text;
+            },
+            totalDependencies: 0,
+            monitorRunDependencies: function(left) {
+                this.totalDependencies = Math.max(this.totalDependencies, left);
+                this.setStatus('Loading... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')');
+            }
+        };
+
+        // Initialize WebAssembly
+        var script = document.createElement('script');
+        script.src = 'ainoisecancellation.js';
+        script.onload = function() {
+            Module.setStatus('Ready');
+        };
+        document.body.appendChild(script);
+
+        // DOM Elements
+        const inputDeviceSelect = document.getElementById('inputDevice');
+        const noiseSuppressionSlider = document.getElementById('noiseSuppression');
+        const voiceSuppressionSlider = document.getElementById('voiceSuppression');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const statusElement = document.getElementById('status');
+
+        // Audio context for visualization
+        let audioContext;
+        let analyser;
+        let dataArray;
+        let animationFrame;
+
+        // Initialize audio visualization
+        function initVisualization() {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            function draw() {
+                animationFrame = requestAnimationFrame(draw);
+                analyser.getByteFrequencyData(dataArray);
+                
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = 800;
+                canvas.height = 100;
+                
+                ctx.fillStyle = '#f8f9fa';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                const barWidth = (canvas.width / dataArray.length) * 2.5;
+                let barHeight;
+                let x = 0;
+                
+                for(let i = 0; i < dataArray.length; i++) {
+                    barHeight = dataArray[i] / 2;
+                    ctx.fillStyle = '#007bff';
+                    ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                    x += barWidth + 1;
+                }
+                
+                document.getElementById('visualization').innerHTML = '';
+                document.getElementById('visualization').appendChild(canvas);
+            }
+            
+            draw();
+        }
+
+        // Update device list
+        function updateDeviceList() {
+            const devices = Module.getAvailableAudioDevices();
+            inputDeviceSelect.innerHTML = '';
+            devices.forEach(device => {
+                const option = document.createElement('option');
+                option.value = device;
+                option.textContent = device;
+                inputDeviceSelect.appendChild(option);
+            });
+        }
+
+        // Start processing
+        startButton.addEventListener('click', async () => {
+            const device = inputDeviceSelect.value;
+            if (!device) {
+                statusElement.textContent = 'Please select an input device';
+                return;
+            }
+
+            try {
+                await Module.initializeAudioProcessor(44100, 1, 1024);
+                const success = await Module.startAudioProcessing(device);
+                
+                if (success) {
+                    startButton.disabled = true;
+                    stopButton.disabled = false;
+                    statusElement.textContent = 'Processing audio...';
+                    initVisualization();
+                } else {
+                    statusElement.textContent = 'Failed to start processing';
+                }
+            } catch (error) {
+                statusElement.textContent = 'Error: ' + error.message;
+            }
+        });
+
+        // Stop processing
+        stopButton.addEventListener('click', () => {
+            Module.stopAudioProcessing();
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            statusElement.textContent = 'Ready';
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+            }
+        });
+
+        // Update suppression levels
+        noiseSuppressionSlider.addEventListener('input', (e) => {
+            Module.setNoiseSuppressionLevel(e.target.value / 100);
+        });
+
+        voiceSuppressionSlider.addEventListener('input', (e) => {
+            Module.setVoiceSuppressionLevel(e.target.value / 100);
+        });
+
+        // Initialize
+        window.addEventListener('load', () => {
+            updateDeviceList();
+        });
+    </script>
+</body>
+</html> 
